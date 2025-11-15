@@ -1,0 +1,15 @@
+# Rust
+target/
+**/target/
+
+# Cargo
+.cargo/
+*.log
+
+# Editors / OS
+*.swp
+*.swo
+.DS_Store
+
+# Docker / infra (we'll add more later if needed)
+infra/data/

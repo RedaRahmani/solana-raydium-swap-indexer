@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "apps/geyser-plugin",
+    "apps/swaps-consumer",
+    "apps/api-server",
+]
+
+resolver = "2"
