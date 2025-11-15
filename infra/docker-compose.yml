@@ -34,5 +34,5 @@ services:
         hard: 262144
     environment:
       CLICKHOUSE_DB: swaps
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_USER: raywatch
+      CLICKHOUSE_PASSWORD: supersecret
