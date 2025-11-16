@@ -13,3 +13,4 @@ target/
 
 # Docker / infra (we'll add more later if needed)
 infra/data/
+test-ledger/

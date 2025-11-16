@@ -1,0 +1,5 @@
+{
+  "libpath": "/home/reda-37/solana-raydium-swap-indexer/target/release/libgeyser_plugin.so",
+  "kafka_brokers": "localhost:9092",
+  "raydium_programs": []
+}
