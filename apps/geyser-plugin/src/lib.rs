@@ -1,7 +1,7 @@
 use log::{error, info};
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{BaseProducer, BaseRecord};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use agave_geyser_plugin_interface::geyser_plugin_interface::{
     GeyserPlugin,
     GeyserPluginError,
@@ -31,13 +31,21 @@ struct TxEvent {
     is_vote: bool,
 }
 
-
 struct RaywatchGeyserPlugin {
     producer: Option<BaseProducer>,
     topic: String,
 }
 
-// Needed because GeyserPlugin: Debug
+#[derive(Deserialize)]
+struct PluginConfig {
+    #[serde(default = "default_kafka_brokers")]
+    kafka_brokers: String,
+}
+
+fn default_kafka_brokers() -> String {
+    "localhost:9092".to_string()
+}
+
 impl fmt::Debug for RaywatchGeyserPlugin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RaywatchGeyserPlugin")
@@ -109,17 +117,66 @@ impl RaywatchGeyserPlugin {
                         error!("RaywatchGeyserPlugin: failed to send to Kafka: {e}");
                     }
 
-                    // producer.flush(Duration::from_millis(0));
                     if let Err(e) = producer.flush(Duration::from_millis(0)) {
                         error!("RaywatchGeyserPlugin: flush error: {e}");
                     }
-
                 }
                 Err(e) => {
                     error!("RaywatchGeyserPlugin: failed to serialize event: {e}");
                 }
             }
         }
+    }
+
+    fn handle_tx_versions(
+        &self,
+        tx: ReplicaTransactionInfoVersions<'_>,
+        slot: u64,
+    ) -> GeyserResult<()> {
+        match tx {
+            ReplicaTransactionInfoVersions::V0_0_1(tx_info) => {
+                info!(
+                    "RaywatchGeyserPlugin: got tx in slot {slot} (is_vote={})",
+                    tx_info.is_vote
+                );
+                self.send_tx_event(slot, tx_info);
+            }
+
+            other => {
+                info!(
+                    "RaywatchGeyserPlugin: notify_transaction called with unsupported transaction info version at slot {slot}"
+                );
+            }
+        };
+        Ok(())
+    }
+
+    fn handle_entry_versions(
+        &self,
+        entry: ReplicaEntryInfoVersions<'_>,
+    ) -> GeyserResult<()> {
+        match entry {
+            ReplicaEntryInfoVersions::V0_0_1(info) => {
+
+                if info.executed_transaction_count == 0 {
+                    return Ok(());
+                }
+
+                info!(
+                    "RaywatchGeyserPlugin: entry slot={} idx={} txs={}",
+                    info.slot, info.index, info.executed_transaction_count
+                );
+
+                self.send_entry_event(info);
+            }
+
+            other => {
+                info!(
+                    "RaywatchGeyserPlugin: notify_entry called with unsupported entry info version"
+                );
+            }
+        };
+        Ok(())
     }
 }
 
@@ -132,10 +189,25 @@ impl GeyserPlugin for RaywatchGeyserPlugin {
         setup_with_default("info");
         info!("RaywatchGeyserPlugin: loading with config {config_file}");
 
-        // TODO: parse kafka_brokers from JSON config
-        let brokers = "localhost:9092";
+        let brokers = match std::fs::read_to_string(config_file) {
+            Ok(contents) => match serde_json::from_str::<PluginConfig>(&contents) {
+                Ok(cfg) => cfg.kafka_brokers,
+                Err(e) => {
+                    error!(
+                        "RaywatchGeyserPlugin: failed to parse config {config_file}: {e}; using default localhost:9092"
+                    );
+                    default_kafka_brokers()
+                }
+            },
+            Err(e) => {
+                error!(
+                    "RaywatchGeyserPlugin: failed to read config {config_file}: {e}; using default localhost:9092"
+                );
+                default_kafka_brokers()
+            }
+        };
 
-        self.init_kafka(brokers)?;
+        self.init_kafka(&brokers)?;
         info!("RaywatchGeyserPlugin: connected to Kafka at {brokers}");
         Ok(())
     }
@@ -150,31 +222,23 @@ impl GeyserPlugin for RaywatchGeyserPlugin {
         tx: ReplicaTransactionInfoVersions<'_>,
         slot: u64,
     ) -> GeyserResult<()> {
-        if let ReplicaTransactionInfoVersions::V0_0_1(tx_info) = tx {
-            info!(
-                "RaywatchGeyserPlugin: got tx in slot {slot} (is_vote={})",
-                tx_info.is_vote
-            );
-            self.send_tx_event(slot, tx_info);
-        }
-        Ok(())
+        self.handle_tx_versions(tx, slot)
     }
 
     fn notify_entry(&self, entry: ReplicaEntryInfoVersions<'_>) -> GeyserResult<()> {
-        if let ReplicaEntryInfoVersions::V0_0_1(info) = entry {
-        // Optional: skip empty entries
-        if info.executed_transaction_count == 0 {
-            return Ok(());
-        }
+        self.handle_entry_versions(entry)
+    }
 
-        info!(
-            "RaywatchGeyserPlugin: entry slot={} idx={} txs={}",
-            info.slot, info.index, info.executed_transaction_count
-        );
+    fn transaction_notifications_enabled(&self) -> bool {
+        true
+    }
 
-        self.send_entry_event(info);
-        }
-        Ok(())
+    fn entry_notifications_enabled(&self) -> bool {
+        true
+    }
+
+    fn account_data_notifications_enabled(&self) -> bool {
+        false
     }
 }
 
