@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use agave_geyser_plugin_interface::geyser_plugin_interface::{
     GeyserPlugin,
     GeyserPluginError,
-    ReplicaEntryInfo,
     ReplicaEntryInfoVersions,
     Result as GeyserResult,
     ReplicaTransactionInfoVersions,
@@ -15,6 +14,7 @@ use rdkafka::producer::Producer;
 use agave_logger::setup_with_default;
 use std::fmt;
 use std::time::Duration;
+use solana_sdk::signature::Signature;
 
 #[derive(Serialize)]
 struct EntryEvent {
@@ -66,12 +66,12 @@ impl RaywatchGeyserPlugin {
         Ok(())
     }
 
-    fn send_tx_event(&self, slot: u64, tx: &ReplicaTransactionInfo) {
+    fn send_tx_event(&self, slot: u64, signature: &Signature, is_vote: bool) {
         if let Some(producer) = &self.producer {
             let event = TxEvent {
                 slot,
-                signature: tx.signature.to_string(),
-                is_vote: tx.is_vote,
+                signature: signature.to_string(),
+                is_vote,
             };
 
             match serde_json::to_vec(&event) {
@@ -96,18 +96,18 @@ impl RaywatchGeyserPlugin {
         }
     }
 
-    fn send_entry_event(&self, info: &ReplicaEntryInfo) {
+    fn send_entry_event(&self, slot: u64, index: usize, num_hashes: u64, executed_transaction_count: u64) {
         if let Some(producer) = &self.producer {
             let event = EntryEvent {
-                slot: info.slot,
-                idx: info.index,
-                num_hashes: info.num_hashes,
-                executed_tx_count: info.executed_transaction_count,
+                slot,
+                idx: index,
+                num_hashes,
+                executed_tx_count: executed_transaction_count,
             };
 
             match serde_json::to_vec(&event) {
                 Ok(payload) => {
-                    let key = info.slot.to_be_bytes();
+                    let key = slot.to_be_bytes();
 
                     let record = BaseRecord::to(&self.topic)
                         .key(&key)
@@ -139,10 +139,23 @@ impl RaywatchGeyserPlugin {
                     "RaywatchGeyserPlugin: got tx in slot {slot} (is_vote={})",
                     tx_info.is_vote
                 );
-                self.send_tx_event(slot, tx_info);
+                self.send_tx_event(slot, tx_info.signature, tx_info.is_vote);
             }
-
-            other => {
+            ReplicaTransactionInfoVersions::V0_0_2(tx_info) => {
+                info!(
+                    "RaywatchGeyserPlugin: got tx in slot {slot} (is_vote={}, index={})",
+                    tx_info.is_vote, tx_info.index
+                );
+                self.send_tx_event(slot, tx_info.signature, tx_info.is_vote);
+            }
+            ReplicaTransactionInfoVersions::V0_0_3(tx_info) => {
+                info!(
+                    "RaywatchGeyserPlugin: got tx in slot {slot} (is_vote={}, index={})",
+                    tx_info.is_vote, tx_info.index
+                );
+                self.send_tx_event(slot, tx_info.signature, tx_info.is_vote);
+            }
+            _ => {
                 info!(
                     "RaywatchGeyserPlugin: notify_transaction called with unsupported transaction info version at slot {slot}"
                 );
@@ -157,19 +170,25 @@ impl RaywatchGeyserPlugin {
     ) -> GeyserResult<()> {
         match entry {
             ReplicaEntryInfoVersions::V0_0_1(info) => {
-
                 if info.executed_transaction_count == 0 {
                     return Ok(());
                 }
-
                 info!(
                     "RaywatchGeyserPlugin: entry slot={} idx={} txs={}",
                     info.slot, info.index, info.executed_transaction_count
                 );
-
-                self.send_entry_event(info);
+                self.send_entry_event(info.slot, info.index, info.num_hashes, info.executed_transaction_count);
             }
-
+            ReplicaEntryInfoVersions::V0_0_2(info) => {
+                if info.executed_transaction_count == 0 {
+                    return Ok(());
+                }
+                info!(
+                    "RaywatchGeyserPlugin: entry slot={} idx={} txs={} starting_tx_index={}",
+                    info.slot, info.index, info.executed_transaction_count, info.starting_transaction_index
+                );
+                self.send_entry_event(info.slot, info.index, info.num_hashes, info.executed_transaction_count);
+            }
             other => {
                 info!(
                     "RaywatchGeyserPlugin: notify_entry called with unsupported entry info version"
